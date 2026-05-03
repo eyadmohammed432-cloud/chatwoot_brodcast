@@ -154,6 +154,18 @@ button.secondary:hover{border-color:#4b5563;color:#e2e8f0}
     <button class="secondary" onclick="downloadLog()">تحميل Log</button>
   </div>
 
+  <!-- Re-trigger Automation Card -->
+  <div class="card">
+    <div class="card-title">تشغيل Automation على المحادثات الموجودة</div>
+    <p style="font-size:12px;color:#9ca3af;margin-bottom:.75rem;line-height:1.6">
+      لو في محادثات قديمة موجودة قبل ما تضيف الـ Custom Attribute — الـ Automation مش هتشتغل عليها.
+      الزرار ده بيعمل Reopen للمحادثات في الـ Label عشان الـ Automation تتفعّل.
+    </p>
+    <button class="secondary" id="retriggerBtn" onclick="retriggerAutomation()" style="width:100%;background:#1a2438;border-color:#3b82f640;color:#3b82f6">
+      🔄 إعادة تفعيل Automation للـ Label
+    </button>
+  </div>
+
   <!-- Log -->
   <div class="log-wrap">
     <div class="log-header">
@@ -334,14 +346,16 @@ async function findContactByPhone(phone) {
   return null;
 }
 
-async function applyCustomAttr(contactId, attrKey, attrVal, name) {
+async function applyCustomAttr(contactId, attrKey, attrVal, name, existing = null) {
   const acc = $('accId').value;
+  // ادمج مع القيم القديمة عشان مش نمسح custom attributes تانية
+  const merged = { ...(existing || {}), [attrKey]: attrVal };
   const r = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}`, 'PATCH',
-    { custom_attributes: { [attrKey]: attrVal } });
+    { custom_attributes: merged });
   if (r.ok) {
-    log(`  ↳ Attr "${attrKey}" = "${attrVal}" ✓`, 'ok');
+    log(`  ↳ ✅ PATCH نجح — Attr "${attrKey}" = "${attrVal}"`, 'ok');
   } else {
-    log(`  ↳ فشل تحديث Attr لـ ${name} — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
+    log(`  ↳ ❌ PATCH فشل لـ ${name} — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
   }
   return r.ok;
 }
@@ -352,6 +366,17 @@ async function upsertContact(row, attrKey) {
   const name    = row.name || phone;
   const attrVal = attrKey ? row[attrKey] : null;
   const hasAttr = !!(attrKey && attrVal);
+
+  // 🔍 Debug: log what we're working with
+  if (attrKey) {
+    if (attrVal) {
+      log(`  🔍 Custom Attr: ${attrKey} = "${attrVal}"`, 'inf');
+    } else {
+      log(`  ⚠️ العمود "${attrKey}" مش موجود في الـ CSV. الأعمدة: [${Object.keys(row).join(', ')}]`, 'warn');
+    }
+  } else {
+    log(`  ⚠️ خانة "عمود الـ Custom Attribute" فاضية — مفيش PATCH هيتعمل`, 'warn');
+  }
 
   // ── 1. حاول إنشاء contact جديد ────────────────────────────
   if ($('createNew').checked) {
@@ -393,14 +418,14 @@ async function upsertContact(row, attrKey) {
 
   // ── 3. حدّث الـ custom attribute ──────────────────────────
   if (hasAttr) {
-    // search results ممكن ما تجيبش custom_attributes — برضو نعمل PATCH
     const currentVal = contact.custom_attributes?.[attrKey];
-    if (currentVal && currentVal === attrVal) {
-      log(`  ↳ Attr "${attrKey}" = "${attrVal}" (بدون تغيير)`, 'inf');
-    } else {
-      if (currentVal) log(`  ↳ تغيير Attr: "${currentVal}" → "${attrVal}"`, 'warn');
-      await applyCustomAttr(id, attrKey, attrVal, name);
+    if (currentVal === attrVal) {
+      log(`  ↳ Attr "${attrKey}" = "${attrVal}" موجود بنفس القيمة — هنعمل PATCH للتأكيد`, 'inf');
+    } else if (currentVal) {
+      log(`  ↳ تغيير Attr: "${currentVal}" → "${attrVal}"`, 'warn');
     }
+    // اعمل PATCH دايماً — مش بنتجاهل أبداً
+    await applyCustomAttr(id, attrKey, attrVal, name, contact.custom_attributes);
   }
 
   return { id, isNew: false };
@@ -478,6 +503,94 @@ async function runUpload() {
   log(`─── انتهى: ${allOk} نجح (${done} جديد + ${updated} تحديث), ${fail} فشل ───`,
     fail === 0 ? 'ok' : 'warn');
   $('runBtn').disabled = false;
+}
+
+// ─── Re-trigger Automation ─────────────────────────────────
+async function retriggerAutomation() {
+  const labelName = $('labelName').value.trim();
+  if (!labelName) { log('ادخل اسم الـ Label أولاً', 'err'); return; }
+
+  const acc = $('accId').value;
+  $('retriggerBtn').disabled = true;
+  log(`─── إعادة تفعيل Automation للـ Label "${labelName}" ───`, 'inf');
+
+  try {
+    // 1. اجلب كل الـ contacts اللي عليهم الـ label
+    log(`جاري جلب الـ contacts من الـ Label...`, 'inf');
+    let allContacts = [];
+    let page = 1;
+    while (true) {
+      const r = await cwFetch(
+        `/api/v1/accounts/${acc}/labels/${encodeURIComponent(labelName)}/contacts?page=${page}`,
+        'GET');
+      if (!r.ok) {
+        log(`فشل جلب contacts الـ Label — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
+        break;
+      }
+      const items = r.data.payload || [];
+      if (!items.length) break;
+      allContacts = allContacts.concat(items);
+      if (items.length < 15) break;
+      page++;
+    }
+    log(`تم العثور على ${allContacts.length} contact في الـ Label`, 'ok');
+
+    if (!allContacts.length) {
+      $('retriggerBtn').disabled = false;
+      return;
+    }
+
+    // 2. لكل contact، اجلب الـ conversations المفتوحة وأعد فتحها
+    let reopened = 0, skipped = 0, errors = 0;
+    for (let i = 0; i < allContacts.length; i++) {
+      const c = allContacts[i];
+      try {
+        const cr = await cwFetch(
+          `/api/v1/accounts/${acc}/contacts/${c.id}/conversations`, 'GET');
+        if (!cr.ok) { errors++; continue; }
+        const convs = cr.data.payload || [];
+
+        for (const conv of convs) {
+          // toggle status: resolved → reopen تيشَغّل Conversation Reopened event
+          // open → resolve ثم reopen
+          if (conv.status === 'resolved') {
+            const toggle = await cwFetch(
+              `/api/v1/accounts/${acc}/conversations/${conv.id}/toggle_status`,
+              'POST', { status: 'open' });
+            if (toggle.ok) {
+              reopened++;
+              log(`  ↻ ${c.name}: Conv #${conv.id} (resolved → open)`, 'ok');
+            } else { errors++; }
+          } else if (conv.status === 'open') {
+            // resolve ثم reopen
+            await cwFetch(
+              `/api/v1/accounts/${acc}/conversations/${conv.id}/toggle_status`,
+              'POST', { status: 'resolved' });
+            await new Promise(r => setTimeout(r, 200));
+            const reopen = await cwFetch(
+              `/api/v1/accounts/${acc}/conversations/${conv.id}/toggle_status`,
+              'POST', { status: 'open' });
+            if (reopen.ok) {
+              reopened++;
+              log(`  ↻ ${c.name}: Conv #${conv.id} (open → resolved → open)`, 'ok');
+            } else { errors++; }
+          } else {
+            skipped++;
+          }
+        }
+      } catch(e) {
+        errors++;
+        log(`خطأ في contact ${c.id}: ${e.message}`, 'err');
+      }
+      await new Promise(r => setTimeout(r, 250));
+    }
+
+    log(`─── انتهى: ${reopened} محادثة اتفعلت, ${skipped} تخطي, ${errors} خطأ ───`,
+      errors === 0 ? 'ok' : 'warn');
+  } catch(e) {
+    log(`خطأ عام: ${e.message}`, 'err');
+  }
+  $('retriggerBtn').disabled = false;
 }
 </script>
 </body>
