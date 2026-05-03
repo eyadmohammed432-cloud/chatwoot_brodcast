@@ -8,6 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const CHATWOOT_URL = process.env.CHATWOOT_URL || 'https://chat.engosoft.com';
 
+// CORS
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS');
@@ -16,11 +17,13 @@ app.use((req, res, next) => {
   next();
 });
 
+// Static files (index.html)
 app.use(express.static(join(__dirname, '../public')));
 
-app.use('/api', createProxyMiddleware({
+// Proxy → Chatwoot
+app.use('/api/v1', createProxyMiddleware({
   target: CHATWOOT_URL,
   changeOrigin: true,
 }));
 
-app.listen(PORT, () => console.log(`Running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Running on port ${PORT} → ${CHATWOOT_URL}`));
