@@ -1,1 +1,436 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chatwoot Campaign Uploader</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#0b0d14;color:#e2e8f0;min-height:100vh;padding:1.5rem 1rem}
+.container{max-width:740px;margin:0 auto}
+
+/* Header */
+.header{display:flex;align-items:center;gap:12px;margin-bottom:1.5rem;padding-bottom:1rem;border-bottom:1px solid #1e2235}
+.logo{width:38px;height:38px;background:#1D9E75;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.header h1{font-size:1.2rem;font-weight:600;color:#fff}
+.header p{font-size:12px;color:#6b7280;margin-top:2px}
+.badge{margin-right:auto;background:#1a2a22;color:#1D9E75;font-size:11px;font-weight:600;padding:4px 10px;border-radius:20px;border:1px solid #1D9E7540}
+
+/* Cards */
+.card{background:#13151f;border:1px solid #1e2235;border-radius:14px;padding:1.25rem;margin-bottom:.875rem}
+.card-title{font-size:10px;font-weight:700;color:#4b5563;text-transform:uppercase;letter-spacing:.1em;margin-bottom:1rem;display:flex;align-items:center;gap:6px}
+.card-title::before{content:'';display:inline-block;width:3px;height:12px;background:#1D9E75;border-radius:2px}
+
+/* Grid */
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.row3{display:grid;grid-template-columns:2fr 1fr;gap:10px}
+.field{margin-bottom:.75rem}
+.field:last-child{margin-bottom:0}
+label{display:block;font-size:12px;color:#6b7280;margin-bottom:5px;font-weight:500}
+input{width:100%;background:#0b0d14;border:1px solid #1e2235;border-radius:8px;padding:9px 12px;font-size:13px;color:#e2e8f0;outline:none;transition:border-color .15s,box-shadow .15s}
+input:focus{border-color:#1D9E75;box-shadow:0 0 0 3px #1D9E7520}
+input::placeholder{color:#374151}
+
+/* Toggle */
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:.5rem 0}
+.toggle-row label{font-size:12px;color:#9ca3af;margin:0}
+.toggle{position:relative;width:36px;height:20px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.slider{position:absolute;inset:0;background:#1e2235;border-radius:20px;cursor:pointer;transition:.2s}
+.slider:before{content:'';position:absolute;width:14px;height:14px;left:3px;top:3px;background:#4b5563;border-radius:50%;transition:.2s}
+.toggle input:checked+.slider{background:#1D9E75}
+.toggle input:checked+.slider:before{transform:translateX(16px);background:#fff}
+
+/* Drop zone */
+.drop{border:1.5px dashed #1e2235;border-radius:10px;padding:1.5rem;text-align:center;cursor:pointer;transition:all .2s;position:relative}
+.drop:hover,.drop.over{background:#131a14;border-color:#1D9E75}
+.drop .icon{font-size:24px;margin-bottom:6px}
+.drop p{font-size:13px;color:#6b7280}
+.drop .fname{font-size:12px;font-weight:600;color:#1D9E75;margin-top:6px;background:#1a2a22;padding:4px 10px;border-radius:6px;display:inline-block}
+.drop-clear{position:absolute;top:8px;left:8px;background:#ef444420;color:#ef4444;border:none;border-radius:6px;padding:2px 8px;font-size:11px;cursor:pointer}
+
+/* Stats */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:.875rem}
+.stat{background:#13151f;border:1px solid #1e2235;border-radius:10px;padding:.75rem;text-align:center}
+.stat .n{font-size:20px;font-weight:700;line-height:1}
+.stat .l{font-size:10px;color:#6b7280;margin-top:4px;font-weight:500}
+.n-ok{color:#1D9E75}.n-err{color:#ef4444}.n-warn{color:#f59e0b}.n-blue{color:#3b82f6}
+
+/* Progress */
+.progress{height:3px;background:#1e2235;border-radius:4px;margin-bottom:.875rem;overflow:hidden}
+.progress-bar{height:100%;background:linear-gradient(90deg,#1D9E75,#0F6E56);width:0%;transition:width .4s}
+
+/* Buttons */
+.btn-row{display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:.875rem}
+button.primary{padding:11px 20px;border-radius:8px;border:none;background:#1D9E75;color:#fff;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
+button.primary:hover{background:#0F6E56;transform:translateY(-1px)}
+button.primary:disabled{opacity:.4;cursor:not-allowed;transform:none}
+button.secondary{padding:11px 16px;border-radius:8px;border:1px solid #1e2235;background:transparent;color:#6b7280;font-size:13px;cursor:pointer;transition:all .15s;white-space:nowrap}
+button.secondary:hover{border-color:#4b5563;color:#e2e8f0}
+
+/* Log */
+.log-wrap{border:1px solid #1e2235;border-radius:10px;overflow:hidden}
+.log-header{background:#13151f;padding:.5rem .75rem;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #1e2235}
+.log-header span{font-size:11px;color:#6b7280;font-weight:600}
+.log-clear{background:none;border:none;color:#4b5563;font-size:11px;cursor:pointer;padding:2px 6px;border-radius:4px}
+.log-clear:hover{color:#9ca3af}
+.log{max-height:220px;overflow-y:auto;font-size:11.5px;font-family:monospace;background:#0b0d14;padding:.75rem}
+.log-item{padding:2.5px 0;border-bottom:1px solid #0f1117;direction:ltr;text-align:left;line-height:1.5}
+.ok{color:#1D9E75}.err{color:#ef4444}.inf{color:#4b5563}.warn{color:#f59e0b}
+
+/* Test connection */
+.test-btn{font-size:11px;color:#1D9E75;background:none;border:none;cursor:pointer;text-decoration:underline;padding:0;margin-top:4px}
+.test-result{font-size:11px;margin-top:4px;padding:4px 8px;border-radius:6px;display:none}
+.test-result.ok{background:#1a2a22;color:#1D9E75;display:block}
+.test-result.err{background:#2a1a1a;color:#ef4444;display:block}
+
+@media(max-width:520px){.row,.row3,.stats{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}.btn-row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <div class="logo">📤</div>
+    <div>
+      <h1>Chatwoot Campaign Uploader</h1>
+      <p>رفع الـ Contacts وإضافة Labels تلقائياً</p>
+    </div>
+    <div class="badge">v2.0</div>
+  </div>
+
+  <!-- Connection Settings -->
+  <div class="card">
+    <div class="card-title">إعدادات الاتصال</div>
+    <div class="row3">
+      <div class="field">
+        <label>Chatwoot URL</label>
+        <input id="cwUrl" value="https://chat.engosoft.com" placeholder="https://your-chatwoot.com">
+      </div>
+      <div class="field">
+        <label>Account ID</label>
+        <input id="accId" value="2" placeholder="2">
+      </div>
+    </div>
+    <div class="field">
+      <label>API Token</label>
+      <input id="apiToken" type="password" value="Buvw2SUpLEJPydCEywhdUd8H">
+    </div>
+    <div class="toggle-row">
+      <label>استخدم Proxy (لحل مشكلة CORS)</label>
+      <label class="toggle">
+        <input type="checkbox" id="useProxy" onchange="toggleProxy()">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="field" id="proxyField" style="display:none;margin-top:.5rem">
+      <label>Proxy URL (Cloudflare Worker)</label>
+      <input id="proxyUrl" placeholder="https://chatwoot-proxy.workers.dev">
+    </div>
+    <button class="test-btn" onclick="testConnection()">← اختبر الاتصال</button>
+    <div class="test-result" id="testResult"></div>
+  </div>
+
+  <!-- Campaign Settings -->
+  <div class="card">
+    <div class="card-title">إعدادات الـ Campaign</div>
+    <div class="row">
+      <div class="field">
+        <label>اسم الـ Label (Audience)</label>
+        <input id="labelName" placeholder="مثلاً: sabrein_may_2026">
+      </div>
+      <div class="field">
+        <label>عمود الـ Custom Attribute</label>
+        <input id="attrCol" placeholder="مثلاً: test_eyadsofian">
+      </div>
+    </div>
+    <div class="toggle-row">
+      <label>إنشاء Contact جديد لو مش موجود</label>
+      <label class="toggle">
+        <input type="checkbox" id="createNew" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="toggle-row">
+      <label>تحديث Custom Attribute للموجودين</label>
+      <label class="toggle">
+        <input type="checkbox" id="updateExisting" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <!-- CSV Upload -->
+  <div class="card">
+    <div class="card-title">ملف الـ CSV</div>
+    <div class="drop" id="drop" onclick="document.getElementById('fileIn').click()">
+      <div class="icon">📄</div>
+      <p>اضغط لاختيار ملف CSV أو اسحبه هنا</p>
+      <p style="font-size:11px;color:#374151;margin-top:4px">الأعمدة المطلوبة: name, phone_number, [custom_attribute]</p>
+      <div class="fname" id="fileName" style="display:none"></div>
+      <button class="drop-clear" id="clearBtn" style="display:none" onclick="clearFile(event)">✕ مسح</button>
+    </div>
+    <input type="file" id="fileIn" accept=".csv" style="display:none" onchange="handleFile(this)">
+  </div>
+
+  <!-- Stats -->
+  <div id="statsWrap" style="display:none">
+    <div class="stats">
+      <div class="stat"><div class="n n-blue" id="sTotal">0</div><div class="l">إجمالي</div></div>
+      <div class="stat"><div class="n n-ok" id="sDone">0</div><div class="l">نجح</div></div>
+      <div class="stat"><div class="n n-warn" id="sUpdated">0</div><div class="l">تم تحديثه</div></div>
+      <div class="stat"><div class="n n-err" id="sFail">0</div><div class="l">فشل</div></div>
+    </div>
+    <div class="progress"><div class="progress-bar" id="progBar"></div></div>
+  </div>
+
+  <!-- Buttons -->
+  <div class="btn-row">
+    <button class="primary" id="runBtn" onclick="runUpload()" disabled>ابدأ الرفع</button>
+    <button class="secondary" onclick="downloadLog()">تحميل Log</button>
+  </div>
+
+  <!-- Log -->
+  <div class="log-wrap">
+    <div class="log-header">
+      <span>سجل العمليات</span>
+      <button class="log-clear" onclick="clearLog()">مسح</button>
+    </div>
+    <div class="log" id="log">
+      <div class="log-item inf">[ready] جاهز للرفع — ارفع ملف CSV وابدأ</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+let csvData = [], logEntries = [], done = 0, updated = 0, fail = 0;
+
+// ─── Helpers ───────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const stat = (id, v) => $(id).textContent = v;
+
+function log(msg, t = 'inf') {
+  const time = new Date().toLocaleTimeString('en-GB');
+  const entry = `[${time}] ${msg}`;
+  logEntries.push(entry);
+  const d = $('log');
+  d.innerHTML += `<div class="log-item ${t}">${entry}</div>`;
+  d.scrollTop = d.scrollHeight;
+}
+
+function clearLog() {
+  $('log').innerHTML = '';
+  logEntries = [];
+}
+
+function downloadLog() {
+  const blob = new Blob([logEntries.join('\n')], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `chatwoot-log-${Date.now()}.txt`;
+  a.click();
+}
+
+function toggleProxy() {
+  $('proxyField').style.display = $('useProxy').checked ? 'block' : 'none';
+}
+
+function clearFile(e) {
+  e.stopPropagation();
+  csvData = [];
+  $('fileName').style.display = 'none';
+  $('clearBtn').style.display = 'none';
+  $('fileIn').value = '';
+  $('runBtn').disabled = true;
+  $('statsWrap').style.display = 'none';
+  log('تم مسح الملف');
+}
+
+// ─── CSV ───────────────────────────────────────────────────
+function parseCSV(text) {
+  const lines = text.trim().split(/\r?\n/);
+  const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+  return lines.slice(1).filter(l => l.trim()).map(l => {
+    const vals = l.split(',').map(v => v.trim().replace(/^"|"$/g, ''));
+    const obj = {};
+    headers.forEach((h, i) => obj[h] = vals[i] || '');
+    return obj;
+  }).filter(r => r.phone_number || r.name);
+}
+
+function handleFile(input) {
+  const f = input.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      csvData = parseCSV(e.target.result);
+      $('fileName').textContent = `${f.name} — ${csvData.length} contact`;
+      $('fileName').style.display = 'inline-block';
+      $('clearBtn').style.display = 'block';
+      $('runBtn').disabled = false;
+      stat('sTotal', csvData.length);
+      stat('sDone', 0); stat('sUpdated', 0); stat('sFail', 0);
+      $('progBar').style.width = '0%';
+      $('statsWrap').style.display = 'block';
+      log(`قرأت ${csvData.length} contacts من "${f.name}"`, 'ok');
+      // Preview headers
+      const headers = Object.keys(csvData[0] || {});
+      log(`الأعمدة: ${headers.join(', ')}`, 'inf');
+    } catch(err) {
+      log(`خطأ في قراءة الملف: ${err.message}`, 'err');
+    }
+  };
+  reader.readAsText(f, 'UTF-8');
+}
+
+// Drag & drop
+const drop = $('drop');
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => {
+  e.preventDefault(); drop.classList.remove('over');
+  $('fileIn').files = e.dataTransfer.files;
+  handleFile($('fileIn'));
+};
+
+// ─── API ───────────────────────────────────────────────────
+function getBaseUrl() {
+  if ($('useProxy').checked && $('proxyUrl').value.trim()) {
+    return $('proxyUrl').value.replace(/\/$/, '');
+  }
+  return $('cwUrl').value.replace(/\/$/, '');
+}
+
+async function cwFetch(path, method, body) {
+  const url = getBaseUrl() + path;
+  const token = $('apiToken').value;
+  const res = await fetch(url, {
+    method,
+    headers: { 'Content-Type': 'application/json', 'api_access_token': token },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const json = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data: json };
+}
+
+async function testConnection() {
+  const acc = $('accId').value;
+  const el = $('testResult');
+  el.className = 'test-result';
+  el.textContent = 'جاري الاتصال...';
+  el.style.display = 'block';
+  try {
+    const r = await cwFetch(`/api/v1/accounts/${acc}/labels`, 'GET');
+    if (r.ok) {
+      el.className = 'test-result ok';
+      el.textContent = `✓ الاتصال ناجح — ${r.data.payload?.length || 0} Label موجود`;
+    } else {
+      el.className = 'test-result err';
+      el.textContent = `✗ خطأ ${r.status} — تأكد من الـ Token والـ Account ID`;
+    }
+  } catch(e) {
+    el.className = 'test-result err';
+    el.textContent = `✗ CORS أو Network error — فعّل الـ Proxy`;
+  }
+}
+
+async function ensureLabel(label) {
+  const acc = $('accId').value;
+  const r = await cwFetch(`/api/v1/accounts/${acc}/labels`, 'GET');
+  if (r.ok && r.data.payload?.find(l => l.title === label)) {
+    log(`Label "${label}" موجود`, 'inf'); return true;
+  }
+  const cr = await cwFetch(`/api/v1/accounts/${acc}/labels`, 'POST',
+    { title: label, color: '#1D9E75', show_on_sidebar: true });
+  if (cr.ok) { log(`تم إنشاء Label: ${label}`, 'ok'); return true; }
+  log(`فشل إنشاء Label: ${JSON.stringify(cr.data)}`, 'err'); return false;
+}
+
+async function upsertContact(row, attrKey) {
+  const acc = $('accId').value;
+  const phone = row.phone_number?.replace(/\s/g, '');
+  const custom_attributes = {};
+  if (attrKey && row[attrKey]) custom_attributes[attrKey] = row[attrKey];
+  const body = { name: row.name || phone, phone_number: phone, custom_attributes };
+
+  if ($('createNew').checked) {
+    const r = await cwFetch(`/api/v1/accounts/${acc}/contacts`, 'POST', body);
+    if (r.ok) {
+      const id = r.data.id || r.data?.payload?.contact?.id;
+      return { id, isNew: true };
+    }
+  }
+
+  // Search existing
+  const q = encodeURIComponent(phone);
+  const s = await cwFetch(`/api/v1/accounts/${acc}/contacts/search?q=${q}&page=1`, 'GET');
+  if (s.ok && s.data.payload?.length > 0) {
+    const id = s.data.payload[0].id;
+    if ($('updateExisting').checked && Object.keys(custom_attributes).length > 0) {
+      await cwFetch(`/api/v1/accounts/${acc}/contacts/${id}`, 'PATCH', { custom_attributes });
+    }
+    return { id, isNew: false };
+  }
+  return null;
+}
+
+async function assignLabel(contactId, label) {
+  const acc = $('accId').value;
+  const r = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}/labels`, 'GET');
+  const existing = r.ok ? (r.data.payload || []) : [];
+  if (existing.includes(label)) return true;
+  const cr = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}/labels`, 'POST',
+    { labels: [...existing, label] });
+  return cr.ok;
+}
+
+// ─── Main Upload ───────────────────────────────────────────
+async function runUpload() {
+  if (!csvData.length) { log('ارفع ملف CSV أولاً', 'err'); return; }
+  const labelName = $('labelName').value.trim();
+  if (!labelName) { log('ادخل اسم الـ Label', 'err'); return; }
+  const attrCol = $('attrCol').value.trim();
+
+  $('runBtn').disabled = true;
+  done = 0; updated = 0; fail = 0;
+  stat('sDone', 0); stat('sUpdated', 0); stat('sFail', 0);
+  log('─── بدء الرفع ───', 'inf');
+
+  const labelOk = await ensureLabel(labelName);
+  if (!labelOk) { $('runBtn').disabled = false; return; }
+
+  for (let i = 0; i < csvData.length; i++) {
+    const row = csvData[i];
+    const name = row.name || row.phone_number;
+    try {
+      const result = await upsertContact(row, attrCol);
+      if (result) {
+        const labeled = await assignLabel(result.id, labelName);
+        if (labeled) {
+          if (result.isNew) { done++; log(`✓ جديد: ${name} → ID ${result.id}`, 'ok'); }
+          else { updated++; log(`↻ موجود: ${name} → تم التحديث`, 'warn'); }
+        } else {
+          fail++; log(`✗ ${name} — فشل إضافة Label`, 'err');
+        }
+      } else {
+        fail++; log(`✗ ${name} — لم يتم العثور عليه ولم يُنشأ`, 'err');
+      }
+    } catch(e) {
+      fail++; log(`✗ ${name} — ${e.message}`, 'err');
+    }
+    stat('sDone', done); stat('sUpdated', updated); stat('sFail', fail);
+    $('progBar').style.width = `${Math.round((i + 1) / csvData.length * 100)}%`;
+    await new Promise(r => setTimeout(r, 300));
+  }
+
+  const allOk = done + updated;
+  log(`─── انتهى: ${allOk} نجح (${done} جديد + ${updated} تحديث), ${fail} فشل ───`,
+    fail === 0 ? 'ok' : 'warn');
+  $('runBtn').disabled = false;
+}
+</script>
+</body>
+</html>
 
