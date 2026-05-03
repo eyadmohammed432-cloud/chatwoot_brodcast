@@ -299,41 +299,139 @@ async function ensureLabel(label) {
   log(`✗ فشل إنشاء Label: ${JSON.stringify(cr.data)}`, 'err'); return false;
 }
 
-async function upsertContact(row, attrKey) {
-  const acc = $('accId').value;
-  const phone = row.phone_number?.replace(/\s/g, '');
-  const custom_attributes = {};
-  if (attrKey && row[attrKey]) custom_attributes[attrKey] = row[attrKey];
-  const body = { name: row.name || phone, phone_number: phone, custom_attributes };
+// بينظف الرقم للمقارنة — بيشيل كل حاجة غير الأرقام
+function normPhone(p) {
+  return (p || '').replace(/[^\d]/g, '');
+}
 
-  if ($('createNew').checked) {
-    const r = await cwFetch(`/api/v1/accounts/${acc}/contacts`, 'POST', body);
-    if (r.ok) {
-      const id = r.data.id || r.data?.payload?.contact?.id;
-      return { id, isNew: true };
-    }
-  }
+// بيجيب الـ ID من أي response format يرجعه Chatwoot
+function extractId(data) {
+  return data?.id
+      || data?.payload?.contact?.id
+      || data?.payload?.id
+      || data?.contact?.id
+      || null;
+}
 
-  // Search existing
-  const q = encodeURIComponent(phone);
-  const s = await cwFetch(`/api/v1/accounts/${acc}/contacts/search?q=${q}&page=1`, 'GET');
-  if (s.ok && s.data.payload?.length > 0) {
-    const id = s.data.payload[0].id;
-    if ($('updateExisting').checked && Object.keys(custom_attributes).length > 0) {
-      await cwFetch(`/api/v1/accounts/${acc}/contacts/${id}`, 'PATCH', { custom_attributes });
-    }
-    return { id, isNew: false };
+async function findContactByPhone(phone) {
+  const acc  = $('accId').value;
+  const norm = normPhone(phone);
+
+  // جرب الصيغتين: مع + ومن غير +
+  const queries = [phone, norm].filter((v, i, a) => a.indexOf(v) === i);
+
+  for (const q of queries) {
+    const s = await cwFetch(
+      `/api/v1/accounts/${acc}/contacts/search?q=${encodeURIComponent(q)}&page=1`, 'GET');
+    if (!s.ok) continue;
+    const contacts = s.data.payload || [];
+    // exact match على الأرقام فقط بدون رموز
+    const match = contacts.find(c => normPhone(c.phone_number) === norm);
+    if (match) return match;
+    // fallback: أول نتيجة لو مفيش exact
+    if (contacts.length > 0) return contacts[0];
   }
   return null;
 }
 
-async function assignLabel(contactId, label) {
+async function applyCustomAttr(contactId, attrKey, attrVal, name) {
   const acc = $('accId').value;
+  const r = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}`, 'PATCH',
+    { custom_attributes: { [attrKey]: attrVal } });
+  if (r.ok) {
+    log(`  ↳ Attr "${attrKey}" = "${attrVal}" ✓`, 'ok');
+  } else {
+    log(`  ↳ فشل تحديث Attr لـ ${name} — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
+  }
+  return r.ok;
+}
+
+async function upsertContact(row, attrKey) {
+  const acc     = $('accId').value;
+  const phone   = row.phone_number?.replace(/\s/g, '');
+  const name    = row.name || phone;
+  const attrVal = attrKey ? row[attrKey] : null;
+  const hasAttr = !!(attrKey && attrVal);
+
+  // ── 1. حاول إنشاء contact جديد ────────────────────────────
+  if ($('createNew').checked) {
+    const r = await cwFetch(`/api/v1/accounts/${acc}/contacts`, 'POST',
+      { name, phone_number: phone });
+
+    if (r.ok) {
+      const id = extractId(r.data);
+      if (!id) { log(`  ↳ تم الإنشاء بس مش عارف الـ ID — response: ${JSON.stringify(r.data)}`, 'warn'); return null; }
+      if (hasAttr) await applyCustomAttr(id, attrKey, attrVal, name);
+      return { id, isNew: true };
+    }
+
+    if (r.status === 422) {
+      // ✅ Chatwoot بيرجع بيانات الـ contact الموجود في الـ 422 response مباشرة
+      const existingId = extractId(r.data);
+      if (existingId) {
+        log(`  ↳ موجود بالفعل (من 422) → ID ${existingId}`, 'inf');
+        if (hasAttr) await applyCustomAttr(existingId, attrKey, attrVal, name);
+        return { id: existingId, isNew: false };
+      }
+      // لو مجاش الـ ID في الـ 422 → نعمل search
+      log(`  ↳ 422 بدون ID — جاري البحث بالرقم...`, 'inf');
+    } else {
+      log(`  ↳ فشل إنشاء "${name}" — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
+      return null;
+    }
+  }
+
+  // ── 2. ابحث عن الـ contact بالرقم (fallback) ──────────────
+  log(`  ↳ بحث عن "${phone}"...`, 'inf');
+  const contact = await findContactByPhone(phone);
+  if (!contact) {
+    log(`  ↳ "${phone}" مش موجود ومش هيتنشأ`, 'err');
+    return null;
+  }
+  const id = contact.id;
+  log(`  ↳ تم الإيجاد → ID ${id}`, 'inf');
+
+  // ── 3. حدّث الـ custom attribute ──────────────────────────
+  if (hasAttr) {
+    // search results ممكن ما تجيبش custom_attributes — برضو نعمل PATCH
+    const currentVal = contact.custom_attributes?.[attrKey];
+    if (currentVal && currentVal === attrVal) {
+      log(`  ↳ Attr "${attrKey}" = "${attrVal}" (بدون تغيير)`, 'inf');
+    } else {
+      if (currentVal) log(`  ↳ تغيير Attr: "${currentVal}" → "${attrVal}"`, 'warn');
+      await applyCustomAttr(id, attrKey, attrVal, name);
+    }
+  }
+
+  return { id, isNew: false };
+}
+
+async function assignLabel(contactId, label, name) {
+  const acc = $('accId').value;
+
+  // ── جيب الـ labels الحالية وحافظ عليها ────────────────────
+  let existing = [];
   const r = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}/labels`, 'GET');
-  const existing = r.ok ? (r.data.payload || []) : [];
-  if (existing.includes(label)) return true;
+  if (r.ok && Array.isArray(r.data.payload)) {
+    existing = r.data.payload;
+  } else if (!r.ok) {
+    log(`  ↳ تحذير: فشل جلب Labels الحالية — HTTP ${r.status} (سيتم إضافة الجديدة فقط)`, 'warn');
+  }
+
+  if (existing.includes(label)) {
+    log(`  ↳ Label "${label}" موجود بالفعل ✓`, 'inf');
+    return true;
+  }
+
+  // ── اضف الجديدة بدون ما تمسح الموجودة ─────────────────────
+  const updated = [...existing, label];
   const cr = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}/labels`, 'POST',
-    { labels: [...existing, label] });
+    { labels: updated });
+  if (cr.ok) {
+    log(`  ↳ Labels: [${updated.join(', ')}] ✓`, 'ok');
+  } else {
+    log(`  ↳ فشل إضافة Label لـ ${name} — HTTP ${cr.status}: ${JSON.stringify(cr.data)}`, 'err');
+  }
   return cr.ok;
 }
 
@@ -358,10 +456,10 @@ async function runUpload() {
     try {
       const result = await upsertContact(row, attrCol);
       if (result) {
-        const labeled = await assignLabel(result.id, labelName);
+        const labeled = await assignLabel(result.id, labelName, name);
         if (labeled) {
-          if (result.isNew) { done++; log(`✓ جديد: ${name} → ID ${result.id}`, 'ok'); }
-          else { updated++; log(`↻ موجود: ${name} → تم التحديث`, 'warn'); }
+          if (result.isNew) { done++; log(`✓ جديد: ${name} (ID ${result.id})`, 'ok'); }
+          else { updated++; log(`↻ موجود: ${name} (ID ${result.id}) → تم التحديث`, 'warn'); }
         } else {
           fail++; log(`✗ ${name} — فشل إضافة Label`, 'err');
         }
