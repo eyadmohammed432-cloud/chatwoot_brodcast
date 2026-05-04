@@ -75,7 +75,7 @@ button.secondary:hover{border-color:#4b5563;color:#e2e8f0}
       <h1>Chatwoot Campaign Uploader</h1>
       <p>رفع الـ Contacts وإضافة Labels تلقائياً</p>
     </div>
-    <div class="badge">v3.0</div>
+    <div class="badge">v3.1 ⚡</div>
   </div>
 
   <!-- Connection Settings -->
@@ -406,9 +406,13 @@ async function upsertContact(row, attrKey) {
       // ✅ Chatwoot بيرجع بيانات الـ contact الموجود في الـ 422 response مباشرة
       const existingId = extractId(r.data);
       if (existingId) {
+        // استخرج الـ labels والـ custom_attributes الموجودين عشان نوفر GET request زيادة
+        const existingContact = r.data?.payload?.contact || r.data?.contact || r.data;
+        const existingLabels = existingContact?.labels || [];
+        const existingAttrs = existingContact?.custom_attributes || {};
         log(`  ↳ موجود بالفعل (من 422) → ID ${existingId}`, 'inf');
-        if (hasAttr) await applyCustomAttr(existingId, attrKey, attrVal, name);
-        return { id: existingId, isNew: false };
+        if (hasAttr) await applyCustomAttr(existingId, attrKey, attrVal, name, existingAttrs);
+        return { id: existingId, isNew: false, existingLabels };
       }
       // لو مجاش الـ ID في الـ 422 → نعمل search
       log(`  ↳ 422 بدون ID — جاري البحث بالرقم...`, 'inf');
@@ -440,26 +444,29 @@ async function upsertContact(row, attrKey) {
     await applyCustomAttr(id, attrKey, attrVal, name, contact.custom_attributes);
   }
 
-  return { id, isNew: false };
+  return { id, isNew: false, existingLabels: contact.labels || [] };
 }
 
-async function assignLabel(contactId, label, name, isNew = false) {
+async function assignLabel(contactId, label, name, isNew = false, existingLabels = null) {
   const acc = $('accId').value;
 
-  // ── لو contact جديد، مفيش labels قديمة — وفّر GET request ──
-  let existing = [];
-  if (!isNew) {
+  // ── استخدم الـ labels الممرّرة (من 422 response أو search) — توفير GET request
+  let existing = existingLabels || [];
+
+  // ── fallback: لو مفيش existingLabels ممرّرة وdata مش جديد، اعمل GET ──
+  if (!isNew && existingLabels === null) {
     const r = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}/labels`, 'GET');
     if (r.ok && Array.isArray(r.data.payload)) {
       existing = r.data.payload;
     } else if (!r.ok) {
       log(`  ↳ تحذير: فشل جلب Labels الحالية — HTTP ${r.status} (سيتم إضافة الجديدة فقط)`, 'warn');
     }
+  }
 
-    if (existing.includes(label)) {
-      log(`  ↳ Label "${label}" موجود بالفعل ✓`, 'inf');
-      return true;
-    }
+  // ── تحقق إن الـ label مش موجود بالفعل ─────────────────────
+  if (existing.includes(label)) {
+    log(`  ↳ Label "${label}" موجود بالفعل ✓`, 'inf');
+    return true;
   }
 
   // ── اضف الجديدة بدون ما تمسح الموجودة ─────────────────────
@@ -483,7 +490,7 @@ async function processContact(row, attrCol, labelName) {
       log(`✗ ${name} — لم يتم العثور عليه ولم يُنشأ`, 'err');
       return { status: 'fail' };
     }
-    const labeled = await assignLabel(result.id, labelName, name, result.isNew);
+    const labeled = await assignLabel(result.id, labelName, name, result.isNew, result.existingLabels);
     if (!labeled) {
       log(`✗ ${name} — فشل إضافة Label`, 'err');
       return { status: 'fail' };
@@ -508,9 +515,9 @@ async function runUpload() {
   if (!labelName) { log('ادخل اسم الـ Label', 'err'); return; }
   const attrCol = $('attrCol').value.trim();
 
-  // ⚙️ إعدادات الـ batching — آمنة للـ rate limit
-  const BATCH_SIZE = 5;       // كم contact في نفس الوقت
-  const BATCH_DELAY = 500;    // delay بين الـ batches (ms)
+  // ⚙️ إعدادات الـ batching — معدلة للسرعة القصوى
+  const BATCH_SIZE = 12;      // 12 contact في نفس الوقت — آمن لـ Sidekiq
+  const BATCH_DELAY = 0;      // مفيش delay — الـ batches تشتغل continuous
 
   $('runBtn').disabled = true;
   done = 0; updated = 0; fail = 0;
