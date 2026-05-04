@@ -269,16 +269,25 @@ drop.ondrop = e => {
 };
 
 // ─── API — كل الـ requests بتروح على Railway مباشرة ────────
-async function cwFetch(path, method, body) {
+async function cwFetch(path, method, body, retries = 2) {
   const url = getBase() + path;
   const token = $('apiToken').value;
-  const res = await fetch(url, {
-    method,
-    headers: { 'Content-Type': 'application/json', 'api_access_token': token },
-    body: body ? JSON.stringify(body) : undefined
-  });
-  const json = await res.json().catch(() => ({}));
-  return { ok: res.ok, status: res.status, data: json };
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'api_access_token': token },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    // Handle rate limit (429)
+    if (res.status === 429 && attempt < retries) {
+      const wait = 2000 * (attempt + 1); // 2s, 4s
+      log(`  ⏳ Rate limit (429) — انتظار ${wait/1000}s ثم إعادة المحاولة`, 'warn');
+      await new Promise(r => setTimeout(r, wait));
+      continue;
+    }
+    const json = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data: json };
+  }
 }
 
 async function testConnection() {
@@ -434,21 +443,23 @@ async function upsertContact(row, attrKey) {
   return { id, isNew: false };
 }
 
-async function assignLabel(contactId, label, name) {
+async function assignLabel(contactId, label, name, isNew = false) {
   const acc = $('accId').value;
 
-  // ── جيب الـ labels الحالية وحافظ عليها ────────────────────
+  // ── لو contact جديد، مفيش labels قديمة — وفّر GET request ──
   let existing = [];
-  const r = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}/labels`, 'GET');
-  if (r.ok && Array.isArray(r.data.payload)) {
-    existing = r.data.payload;
-  } else if (!r.ok) {
-    log(`  ↳ تحذير: فشل جلب Labels الحالية — HTTP ${r.status} (سيتم إضافة الجديدة فقط)`, 'warn');
-  }
+  if (!isNew) {
+    const r = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}/labels`, 'GET');
+    if (r.ok && Array.isArray(r.data.payload)) {
+      existing = r.data.payload;
+    } else if (!r.ok) {
+      log(`  ↳ تحذير: فشل جلب Labels الحالية — HTTP ${r.status} (سيتم إضافة الجديدة فقط)`, 'warn');
+    }
 
-  if (existing.includes(label)) {
-    log(`  ↳ Label "${label}" موجود بالفعل ✓`, 'inf');
-    return true;
+    if (existing.includes(label)) {
+      log(`  ↳ Label "${label}" موجود بالفعل ✓`, 'inf');
+      return true;
+    }
   }
 
   // ── اضف الجديدة بدون ما تمسح الموجودة ─────────────────────
@@ -463,47 +474,87 @@ async function assignLabel(contactId, label, name) {
   return cr.ok;
 }
 
-// ─── Main Upload ───────────────────────────────────────────
+// ─── Process single contact ────────────────────────────────
+async function processContact(row, attrCol, labelName) {
+  const name = row.name || row.phone_number;
+  try {
+    const result = await upsertContact(row, attrCol);
+    if (!result) {
+      log(`✗ ${name} — لم يتم العثور عليه ولم يُنشأ`, 'err');
+      return { status: 'fail' };
+    }
+    const labeled = await assignLabel(result.id, labelName, name, result.isNew);
+    if (!labeled) {
+      log(`✗ ${name} — فشل إضافة Label`, 'err');
+      return { status: 'fail' };
+    }
+    if (result.isNew) {
+      log(`✓ جديد: ${name} (ID ${result.id})`, 'ok');
+      return { status: 'new' };
+    } else {
+      log(`↻ موجود: ${name} (ID ${result.id}) → تم التحديث`, 'warn');
+      return { status: 'updated' };
+    }
+  } catch(e) {
+    log(`✗ ${name} — ${e.message}`, 'err');
+    return { status: 'fail' };
+  }
+}
+
+// ─── Main Upload (Parallel batches) ────────────────────────
 async function runUpload() {
   if (!csvData.length) { log('ارفع ملف CSV أولاً', 'err'); return; }
   const labelName = $('labelName').value.trim();
   if (!labelName) { log('ادخل اسم الـ Label', 'err'); return; }
   const attrCol = $('attrCol').value.trim();
 
+  // ⚙️ إعدادات الـ batching — آمنة للـ rate limit
+  const BATCH_SIZE = 5;       // كم contact في نفس الوقت
+  const BATCH_DELAY = 500;    // delay بين الـ batches (ms)
+
   $('runBtn').disabled = true;
   done = 0; updated = 0; fail = 0;
   stat('sDone', 0); stat('sUpdated', 0); stat('sFail', 0);
-  log('─── بدء الرفع ───', 'inf');
+
+  const startTime = Date.now();
+  log(`─── بدء الرفع (${csvData.length} contact في batches من ${BATCH_SIZE}) ───`, 'inf');
 
   const labelOk = await ensureLabel(labelName);
   if (!labelOk) { $('runBtn').disabled = false; return; }
 
-  for (let i = 0; i < csvData.length; i++) {
-    const row = csvData[i];
-    const name = row.name || row.phone_number;
-    try {
-      const result = await upsertContact(row, attrCol);
-      if (result) {
-        const labeled = await assignLabel(result.id, labelName, name);
-        if (labeled) {
-          if (result.isNew) { done++; log(`✓ جديد: ${name} (ID ${result.id})`, 'ok'); }
-          else { updated++; log(`↻ موجود: ${name} (ID ${result.id}) → تم التحديث`, 'warn'); }
-        } else {
-          fail++; log(`✗ ${name} — فشل إضافة Label`, 'err');
-        }
-      } else {
-        fail++; log(`✗ ${name} — لم يتم العثور عليه ولم يُنشأ`, 'err');
-      }
-    } catch(e) {
-      fail++; log(`✗ ${name} — ${e.message}`, 'err');
+  // قسّم على batches
+  let processed = 0;
+  for (let i = 0; i < csvData.length; i += BATCH_SIZE) {
+    const batch = csvData.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(csvData.length / BATCH_SIZE);
+    log(`──── Batch ${batchNum}/${totalBatches} (${batch.length} contacts) ────`, 'inf');
+
+    // شغّل الـ batch بالكامل في parallel
+    const results = await Promise.all(
+      batch.map(row => processContact(row, attrCol, labelName))
+    );
+
+    // عدّ النتائج
+    for (const r of results) {
+      if (r.status === 'new') done++;
+      else if (r.status === 'updated') updated++;
+      else fail++;
     }
+    processed += batch.length;
+
     stat('sDone', done); stat('sUpdated', updated); stat('sFail', fail);
-    $('progBar').style.width = `${Math.round((i + 1) / csvData.length * 100)}%`;
-    await new Promise(r => setTimeout(r, 300));
+    $('progBar').style.width = `${Math.round(processed / csvData.length * 100)}%`;
+
+    // delay بين الـ batches (مش بعد آخر batch)
+    if (i + BATCH_SIZE < csvData.length) {
+      await new Promise(r => setTimeout(r, BATCH_DELAY));
+    }
   }
 
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   const allOk = done + updated;
-  log(`─── انتهى: ${allOk} نجح (${done} جديد + ${updated} تحديث), ${fail} فشل ───`,
+  log(`─── انتهى في ${elapsed}s — ${allOk} نجح (${done} جديد + ${updated} تحديث), ${fail} فشل ───`,
     fail === 0 ? 'ok' : 'warn');
   $('runBtn').disabled = false;
 }
@@ -518,14 +569,22 @@ async function retriggerAutomation() {
   log(`─── إعادة تفعيل Automation للـ Label "${labelName}" ───`, 'inf');
 
   try {
-    // 1. اجلب كل الـ contacts اللي عليهم الـ label
+    // 1. اجلب كل الـ contacts اللي عليهم الـ label عبر contacts/filter
     log(`جاري جلب الـ contacts من الـ Label...`, 'inf');
     let allContacts = [];
     let page = 1;
     while (true) {
       const r = await cwFetch(
-        `/api/v1/accounts/${acc}/labels/${encodeURIComponent(labelName)}/contacts?page=${page}`,
-        'GET');
+        `/api/v1/accounts/${acc}/contacts/filter?page=${page}`,
+        'POST',
+        {
+          payload: [{
+            attribute_key: 'labels',
+            filter_operator: 'equal_to',
+            values: [labelName],
+            query_operator: null
+          }]
+        });
       if (!r.ok) {
         log(`فشل جلب contacts الـ Label — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
         break;
