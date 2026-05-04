@@ -158,8 +158,11 @@ button.secondary:hover{border-color:#4b5563;color:#e2e8f0}
   <div class="card">
     <div class="card-title">تشغيل Automation على المحادثات الموجودة</div>
     <p style="font-size:12px;color:#9ca3af;margin-bottom:.75rem;line-height:1.6">
-      لو في محادثات قديمة موجودة قبل ما تضيف الـ Custom Attribute — الـ Automation مش هتشتغل عليها.
-      الزرار ده بيعمل Reopen للمحادثات في الـ Label عشان الـ Automation تتفعّل.
+      لو في محادثات قديمة موجودة قبل ما تضيف الـ Custom Attribute — الـ Automation بـ Conversation Created مش هتشتغل عليها.
+      الزرار ده بيعمل <b style="color:#1D9E75">Update</b> للمحادثة (مش Reopen) — أنظف وأسرع.
+    </p>
+    <p style="font-size:11px;color:#f59e0b;margin-bottom:.75rem;line-height:1.6;background:#2a1f0a;padding:8px 10px;border-radius:6px;border:1px solid #f59e0b30">
+      ⚠️ مهم: لازم يكون عندك Automation بـ Event = <b>Conversation Updated</b> (مش Created) عشان يشتغل.
     </p>
     <button class="secondary" id="retriggerBtn" onclick="retriggerAutomation()" style="width:100%;background:#1a2438;border-color:#3b82f640;color:#3b82f6">
       🔄 إعادة تفعيل Automation للـ Label
@@ -540,8 +543,8 @@ async function retriggerAutomation() {
       return;
     }
 
-    // 2. لكل contact، اجلب الـ conversations المفتوحة وأعد فتحها
-    let reopened = 0, skipped = 0, errors = 0;
+    // 2. لكل contact، اجلب الـ conversations وحدّثها (يطلق conversation_updated event)
+    let triggered = 0, skipped = 0, errors = 0;
     for (let i = 0; i < allContacts.length; i++) {
       const c = allContacts[i];
       try {
@@ -550,32 +553,35 @@ async function retriggerAutomation() {
         if (!cr.ok) { errors++; continue; }
         const convs = cr.data.payload || [];
 
+        if (!convs.length) {
+          skipped++;
+          log(`  ○ ${c.name}: مفيش conversations`, 'inf');
+          continue;
+        }
+
         for (const conv of convs) {
-          // toggle status: resolved → reopen تيشَغّل Conversation Reopened event
-          // open → resolve ثم reopen
-          if (conv.status === 'resolved') {
-            const toggle = await cwFetch(
-              `/api/v1/accounts/${acc}/conversations/${conv.id}/toggle_status`,
-              'POST', { status: 'open' });
-            if (toggle.ok) {
-              reopened++;
-              log(`  ↻ ${c.name}: Conv #${conv.id} (resolved → open)`, 'ok');
-            } else { errors++; }
-          } else if (conv.status === 'open') {
-            // resolve ثم reopen
-            await cwFetch(
-              `/api/v1/accounts/${acc}/conversations/${conv.id}/toggle_status`,
-              'POST', { status: 'resolved' });
-            await new Promise(r => setTimeout(r, 200));
-            const reopen = await cwFetch(
-              `/api/v1/accounts/${acc}/conversations/${conv.id}/toggle_status`,
-              'POST', { status: 'open' });
-            if (reopen.ok) {
-              reopened++;
-              log(`  ↻ ${c.name}: Conv #${conv.id} (open → resolved → open)`, 'ok');
-            } else { errors++; }
+          // اعمل update فاضي للـ conversation عشان يطلق conversation_updated event
+          // هنحدّث الـ priority بنفس قيمتها (أو null لو مفيش) — ده بيطلق الـ event بدون أي تغيير حقيقي
+          const currentPriority = conv.priority || null;
+          const updateRes = await cwFetch(
+            `/api/v1/accounts/${acc}/conversations/${conv.id}`,
+            'PATCH', { priority: currentPriority });
+
+          if (updateRes.ok) {
+            triggered++;
+            log(`  ⚡ ${c.name}: Conv #${conv.id} (${conv.status}) — تم التحديث`, 'ok');
           } else {
-            skipped++;
+            // fallback: جرب toggle_priority
+            const togglePri = await cwFetch(
+              `/api/v1/accounts/${acc}/conversations/${conv.id}/toggle_priority`,
+              'POST', { priority: currentPriority });
+            if (togglePri.ok) {
+              triggered++;
+              log(`  ⚡ ${c.name}: Conv #${conv.id} (${conv.status}) — تم التحديث (priority)`, 'ok');
+            } else {
+              errors++;
+              log(`  ✗ ${c.name}: Conv #${conv.id} — HTTP ${updateRes.status}`, 'err');
+            }
           }
         }
       } catch(e) {
@@ -585,7 +591,7 @@ async function retriggerAutomation() {
       await new Promise(r => setTimeout(r, 250));
     }
 
-    log(`─── انتهى: ${reopened} محادثة اتفعلت, ${skipped} تخطي, ${errors} خطأ ───`,
+    log(`─── انتهى: ${triggered} محادثة اتفعلت, ${skipped} تخطي, ${errors} خطأ ───`,
       errors === 0 ? 'ok' : 'warn');
   } catch(e) {
     log(`خطأ عام: ${e.message}`, 'err');
