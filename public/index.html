@@ -75,7 +75,7 @@ button.secondary:hover{border-color:#4b5563;color:#e2e8f0}
       <h1>Chatwoot Campaign Uploader</h1>
       <p>رفع الـ Contacts وإضافة Labels تلقائياً</p>
     </div>
-    <div class="badge">v3.1 ⚡</div>
+    <div class="badge">v3.2 ⚡⚡</div>
   </div>
 
   <!-- Connection Settings -->
@@ -119,6 +119,15 @@ button.secondary:hover{border-color:#4b5563;color:#e2e8f0}
       <label>تحديث Custom Attribute للموجودين</label>
       <label class="toggle">
         <input type="checkbox" id="updateExisting" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="toggle-row">
+      <label title="لو مفعّل، هيعمل PATCH دايماً حتى لو القيمة موجودة بالفعل (أبطأ بس مضمون)">
+        وضع التأكيد <span style="opacity:.6;font-size:.85em">— PATCH دايماً (أبطأ)</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="forceUpdate">
         <span class="slider"></span>
       </label>
     </div>
@@ -349,11 +358,10 @@ async function findContactByPhone(phone) {
       `/api/v1/accounts/${acc}/contacts/search?q=${encodeURIComponent(q)}&page=1`, 'GET');
     if (!s.ok) continue;
     const contacts = s.data.payload || [];
-    // exact match على الأرقام فقط بدون رموز
+    // ✅ exact match فقط — مفيش first-result fallback
+    // ده بيمنع الـ false positives لما الـ search بيرجع contacts غير مطابقة
     const match = contacts.find(c => normPhone(c.phone_number) === norm);
     if (match) return match;
-    // fallback: أول نتيجة لو مفيش exact
-    if (contacts.length > 0) return contacts[0];
   }
   return null;
 }
@@ -378,6 +386,7 @@ async function upsertContact(row, attrKey) {
   const name    = row.name || phone;
   const attrVal = attrKey ? row[attrKey] : null;
   const hasAttr = !!(attrKey && attrVal);
+  const forceUpdate = $('forceUpdate')?.checked || false;
 
   // 🔍 Debug: log what we're working with
   if (attrKey) {
@@ -390,61 +399,81 @@ async function upsertContact(row, attrKey) {
     log(`  ⚠️ خانة "عمود الـ Custom Attribute" فاضية — مفيش PATCH هيتعمل`, 'warn');
   }
 
-  // ── 1. حاول إنشاء contact جديد ────────────────────────────
-  if ($('createNew').checked) {
-    const r = await cwFetch(`/api/v1/accounts/${acc}/contacts`, 'POST',
-      { name, phone_number: phone });
+  // ── 1. ابحث الأول (Search-First) — بيرجع contact + attrs + labels في request واحد ──
+  const contact = await findContactByPhone(phone);
 
-    if (r.ok) {
-      const id = extractId(r.data);
-      if (!id) { log(`  ↳ تم الإنشاء بس مش عارف الـ ID — response: ${JSON.stringify(r.data)}`, 'warn'); return null; }
-      if (hasAttr) await applyCustomAttr(id, attrKey, attrVal, name);
-      return { id, isNew: true };
-    }
+  // ── 2. لو موجود — حدّث (مع smart skip) ──────────────────────
+  if (contact) {
+    const id = contact.id;
+    log(`  ↳ موجود → ID ${id}`, 'inf');
 
-    if (r.status === 422) {
-      // ✅ Chatwoot بيرجع بيانات الـ contact الموجود في الـ 422 response مباشرة
-      const existingId = extractId(r.data);
-      if (existingId) {
-        // استخرج الـ labels والـ custom_attributes الموجودين عشان نوفر GET request زيادة
-        const existingContact = r.data?.payload?.contact || r.data?.contact || r.data;
-        const existingLabels = existingContact?.labels || [];
-        const existingAttrs = existingContact?.custom_attributes || {};
-        log(`  ↳ موجود بالفعل (من 422) → ID ${existingId}`, 'inf');
-        if (hasAttr) await applyCustomAttr(existingId, attrKey, attrVal, name, existingAttrs);
-        return { id: existingId, isNew: false, existingLabels };
+    // Smart Skip للـ PATCH: لو الـ attr نفس القيمة + مفيش "وضع التأكيد" مفعّل → skip
+    if (hasAttr) {
+      const currentVal = contact.custom_attributes?.[attrKey];
+      if (currentVal === attrVal && !forceUpdate) {
+        log(`  ↳ ⚡ Attr "${attrKey}" = "${attrVal}" موجود — تخطي PATCH`, 'inf');
+      } else {
+        if (currentVal && currentVal !== attrVal) {
+          log(`  ↳ تغيير Attr: "${currentVal}" → "${attrVal}"`, 'warn');
+        }
+        await applyCustomAttr(id, attrKey, attrVal, name, contact.custom_attributes);
       }
-      // لو مجاش الـ ID في الـ 422 → نعمل search
-      log(`  ↳ 422 بدون ID — جاري البحث بالرقم...`, 'inf');
-    } else {
-      log(`  ↳ فشل إنشاء "${name}" — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
-      return null;
     }
+
+    return { id, isNew: false, existingLabels: contact.labels || [] };
   }
 
-  // ── 2. ابحث عن الـ contact بالرقم (fallback) ──────────────
-  log(`  ↳ بحث عن "${phone}"...`, 'inf');
-  const contact = await findContactByPhone(phone);
-  if (!contact) {
-    log(`  ↳ "${phone}" مش موجود ومش هيتنشأ`, 'err');
+  // ── 3. مش موجود — اعمل create لو الـ option مفعّل ────────────
+  if (!$('createNew').checked) {
+    log(`  ↳ "${phone}" مش موجود ومش هيتنشأ (الـ option مقفولة)`, 'err');
     return null;
   }
-  const id = contact.id;
-  log(`  ↳ تم الإيجاد → ID ${id}`, 'inf');
 
-  // ── 3. حدّث الـ custom attribute ──────────────────────────
-  if (hasAttr) {
-    const currentVal = contact.custom_attributes?.[attrKey];
-    if (currentVal === attrVal) {
-      log(`  ↳ Attr "${attrKey}" = "${attrVal}" موجود بنفس القيمة — هنعمل PATCH للتأكيد`, 'inf');
-    } else if (currentVal) {
-      log(`  ↳ تغيير Attr: "${currentVal}" → "${attrVal}"`, 'warn');
+  log(`  ↳ مش موجود — إنشاء جديد...`, 'inf');
+  const r = await cwFetch(`/api/v1/accounts/${acc}/contacts`, 'POST',
+    { name, phone_number: phone });
+
+  if (r.ok) {
+    const id = extractId(r.data);
+    if (!id) {
+      log(`  ↳ تم الإنشاء بس مش عارف الـ ID — response: ${JSON.stringify(r.data)}`, 'warn');
+      return null;
     }
-    // اعمل PATCH دايماً — مش بنتجاهل أبداً
-    await applyCustomAttr(id, attrKey, attrVal, name, contact.custom_attributes);
+    if (hasAttr) await applyCustomAttr(id, attrKey, attrVal, name);
+    return { id, isNew: true, existingLabels: [] };
   }
 
-  return { id, isNew: false, existingLabels: contact.labels || [] };
+  // 422 = race condition: contact اتعمل بين الـ search والـ create
+  if (r.status === 422) {
+    const existingId = extractId(r.data);
+    if (existingId) {
+      const existingContact = r.data?.payload?.contact || r.data?.contact || r.data;
+      const existingAttrs = existingContact?.custom_attributes || {};
+      const existingLabels = existingContact?.labels || [];
+      log(`  ↳ موجود (race condition) → ID ${existingId}`, 'inf');
+      if (hasAttr) {
+        const currentVal = existingAttrs[attrKey];
+        if (!(currentVal === attrVal && !forceUpdate)) {
+          await applyCustomAttr(existingId, attrKey, attrVal, name, existingAttrs);
+        }
+      }
+      return { id: existingId, isNew: false, existingLabels };
+    }
+    // 422 بدون ID — fallback تاني للـ search
+    const c = await findContactByPhone(phone);
+    if (c) {
+      if (hasAttr) {
+        const currentVal = c.custom_attributes?.[attrKey];
+        if (!(currentVal === attrVal && !forceUpdate)) {
+          await applyCustomAttr(c.id, attrKey, attrVal, name, c.custom_attributes);
+        }
+      }
+      return { id: c.id, isNew: false, existingLabels: c.labels || [] };
+    }
+  }
+
+  log(`  ↳ فشل إنشاء "${name}" — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
+  return null;
 }
 
 async function assignLabel(contactId, label, name, isNew = false, existingLabels = null) {
